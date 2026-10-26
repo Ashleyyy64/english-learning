@@ -24,8 +24,8 @@
 # tts 音频缓存
 /.tts-cache/
 
-# 词书数据（238MB，服务器上直接 clone 源仓库 LinXueyuanStdio/DictionaryData）
-/dictionary-data/
+# 词书数据：保留源数据，忽略解压临时产物（relation_book_word.zip 会自动解压）
+/dictionary-data/relation_extract/
 
 # 部署临时/生成文件
 /_tmp/
