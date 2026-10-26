@@ -1,0 +1,219 @@
+// Lingua 英语学习平台 · Prisma 数据模型
+// 数据库：PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 用户（教师 / 学生共用一张表）
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  name         String // 显示姓名 / 昵称
+  // 使用字符串并在 API 层校验 TEACHER / STUDENT（避免 enum 迁移成本）
+  role         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // 教师视角：我绑定的学生
+  students    TeacherStudent[] @relation("TeacherStudents")
+  // 学生视角：绑定我的教师
+  teachers    TeacherStudent[] @relation("StudentTeachers")
+  // 教师发出的邀请码
+  invitations Invitation[]     @relation("TeacherInvitations")
+  // 学生通过某个邀请码建立的关系（可选关联）
+  acceptedInvitations Invitation[] @relation("StudentAcceptedInvitations")
+  // 背单词相关
+  wordbooks    UserBook[]
+  wordNotes    UserWordNote[]
+  wordProgress UserWordProgress[]
+  wrongWords   UserWrongWord[]
+  memories     UserMemory[]
+}
+
+// 教师 - 学生绑定关系
+model TeacherStudent {
+  id        String   @id @default(cuid())
+  teacherId String
+  studentId String
+  createdAt DateTime @default(now())
+
+  teacher User @relation("TeacherStudents", fields: [teacherId], references: [id], onDelete: Cascade)
+  student User @relation("StudentTeachers", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([teacherId, studentId])
+  @@index([teacherId])
+  @@index([studentId])
+}
+
+// 邀请码
+model Invitation {
+  id         String           @id @default(cuid())
+  code       String           @unique
+  teacherId  String
+  // 使用字符串并在 API 层校验状态值（避免 enum 迁移成本）
+  status     String           @default("ACTIVE")
+  studentId  String? // 接受该邀请的学生（可选）
+  createdAt  DateTime         @default(now())
+  acceptedAt DateTime?
+
+  teacher User @relation("TeacherInvitations", fields: [teacherId], references: [id], onDelete: Cascade)
+  student User? @relation("StudentAcceptedInvitations", fields: [studentId], references: [id], onDelete: SetNull)
+
+  @@index([teacherId])
+}
+
+// ===== 背单词 =====
+
+// 词书（含分类：小学 / 中学 / 高中 / 考研 / 考博 / 出国）
+model WordBook {
+  id        String  @id
+  parentId  String?
+  name      String
+  level     Int?
+  order     Float?
+  itemNum   Int?
+  author    String?
+  book      String?
+  comment   String?
+  publisher String?
+  version   String?
+  flag      String?
+
+  parent   WordBook?  @relation("BookTree", fields: [parentId], references: [id])
+  children WordBook[] @relation("BookTree")
+  words    BookWord[]
+  users    UserBook[]
+
+  @@index([parentId])
+}
+
+// 单词
+model Word {
+  id              String  @id
+  text            String
+  phoneticUk      String?
+  phoneticUs      String?
+  frequency       Float?
+  difficulty      Int?
+  acknowledgeRate Float?
+  translation     String?
+
+  books    BookWord[]
+  notes    UserWordNote[]
+  progress UserWordProgress[]
+  wrongBy  UserWrongWord[]
+  memories UserMemory[]
+
+  @@index([text])
+}
+
+// 词书 - 单词关系
+model BookWord {
+  id     String  @id @default(cuid())
+  bookId String
+  wordId String
+  unit   String?
+  flag   String?
+
+  book WordBook @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  word Word     @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, wordId])
+  @@index([wordId])
+}
+
+// 用户当前选择的词书（一人一本）
+model UserBook {
+  id        String   @id @default(cuid())
+  userId    String
+  bookId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book WordBook @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([userId])
+}
+
+// 用户对单词的笔记
+model UserWordNote {
+  id        String   @id @default(cuid())
+  userId    String
+  wordId    String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word Word @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, wordId])
+}
+
+// 用户单词学习状态（学前检测 / 单词识记）
+model UserWordProgress {
+  id        String   @id @default(cuid())
+  userId    String
+  wordId    String
+  status    String   @default("UNKNOWN") // UNKNOWN / KNOWN / LEARNING / MASTERED
+  batchId   String? // 学习批次：同一次学前检测提交的「不会」词共享同一批次（毫秒时间戳字符串）；识记/学后强化只读最新批次
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word Word @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, wordId])
+  @@index([wordId])
+  @@index([userId, batchId])
+}
+
+// 用户错题本：统一收录两类错误
+// ① 学后检测（学后强化）环节答错的单词
+// ② 抗遗忘复习环节答错的单词
+// 通过 lastWrongAt / wrongCount 便于针对性复习。
+model UserWrongWord {
+  id          String   @id @default(cuid())
+  userId      String
+  wordId      String
+  bookId      String? // 错题来源词书（可选）
+  wrongCount  Int      @default(1) // 累计答错次数
+  lastWrongAt DateTime @default(now()) // 最近一次答错时间
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word Word @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, wordId])
+  @@index([userId])
+  @@index([wordId])
+}
+
+// 用户抗遗忘记录（艾宾浩斯遗忘曲线 / 间隔重复）
+// 收录规则：凡进入「单词识记」环节（学前检测标记为「不会」/ UNKNOWN）的单词，
+// 立即自动纳入抗遗忘复习列表，按遗忘曲线调度复习，确保识记与抗遗忘完整同步、无一遗漏。
+model UserMemory {
+  id           String   @id @default(cuid())
+  userId       String
+  wordId       String
+  stage        Int      @default(0) // 当前记忆阶段（0=刚收录待首次复习，1~6=已通过对应阶段）
+  nextReviewAt DateTime @default(now()) // 下次复习时间
+  reviewCount  Int      @default(0) // 累计复习次数
+  lastResult   String? // 上次复习结果（CORRECT / WRONG）
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word Word @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, wordId])
+  @@index([userId])
+  @@index([nextReviewAt])
+}

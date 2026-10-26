@@ -1,0 +1,33 @@
+# Lingua 反向代理配置（Nginx）
+# 放到 /etc/nginx/conf.d/lingua.conf 或 /etc/nginx/sites-available/lingua
+# 将 example.com 替换为你的域名
+
+server {
+    listen 80;
+    server_name example.com;
+
+    # HTTP 自动跳转 HTTPS（如需）
+    # return 301 https://$host$request_uri;
+
+    # 客户端上传体大小限制（预留文件上传能力）
+    client_max_body_size 20m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    # TTS 音频缓存：静态资源可被浏览器/CDN 长期缓存
+    location /api/tts {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_cache_valid 200 365d;
+    }
+}

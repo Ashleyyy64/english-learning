@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>语音合成诊断</title>
+  <style>
+    body { font-family: -apple-system, 'Segoe UI', sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #1c2333; }
+    h1 { font-size: 22px; }
+    button { margin: 6px 8px 6px 0; padding: 10px 16px; border: 1px solid #d9dee7; background: #fff; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    button:hover { background: #f5f7fa; }
+    .row { margin: 18px 0; }
+    .label { font-weight: 600; margin-bottom: 6px; }
+    #log { background: #f7f8fa; border: 1px solid #eceef2; border-radius: 8px; padding: 14px; font-size: 13px; line-height: 1.7; white-space: pre-wrap; font-family: ui-monospace, monospace; min-height: 120px; }
+    .ok { color: #1a7f5a; }
+    .bad { color: #c9574b; }
+  </style>
+</head>
+<body>
+  <h1>🔊 语音合成（speechSynthesis）诊断</h1>
+  <p>这个页面和你的应用完全独立。点击下面的按钮测试浏览器语音是否正常工作。</p>
+
+  <div class="row">
+    <div class="label">1. 基础测试</div>
+    <button onclick="testSpeak()">朗读 "hello"</button>
+    <button onclick="testSpeakEn()">朗读 "hello world"（en-US）</button>
+  </div>
+
+  <div class="row">
+    <div class="label">2. 语音包检测</div>
+    <button onclick="listVoices()">列出所有语音包</button>
+    <button onclick="testOnlineEn()">测试英文在线音色</button>
+  </div>
+
+  <div class="row">
+    <div class="label">诊断日志</div>
+    <div id="log">等待操作…</div>
+  </div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    function log(msg, cls) {
+      const div = document.createElement('div');
+      div.textContent = msg;
+      if (cls) div.className = cls;
+      logEl.appendChild(div);
+    }
+
+    function listVoices() {
+      if (!('speechSynthesis' in window)) {
+        log('❌ 浏览器不支持 speechSynthesis', 'bad');
+        return;
+      }
+      const voices = window.speechSynthesis.getVoices();
+      log(`共找到 ${voices.length} 个语音包：`);
+      if (voices.length === 0) {
+        log('⚠️ 语音包列表为空（可能尚未加载，稍等后再点一次）', 'bad');
+      }
+      voices.forEach(v => {
+        const en = v.lang.toLowerCase().startsWith('en');
+        log(`  - "${v.name}" | lang=${v.lang} | local=${v.localService} ${en ? '✅英文' : ''}`);
+      });
+    }
+
+    function testSpeak() {
+      if (!('speechSynthesis' in window)) {
+        log('❌ 浏览器不支持 speechSynthesis', 'bad');
+        return;
+      }
+      const u = new SpeechSynthesisUtterance('hello');
+      u.onstart = () => log('✅ onstart 触发（开始朗读）', 'ok');
+      u.onend = () => log('✅ onend 触发（朗读结束）', 'ok');
+      u.onerror = (e) => log(`❌ onerror: ${e.error}`, 'bad');
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+      log('已调用 speak()，请听是否有声音…');
+    }
+
+    function testSpeakEn() {
+      if (!('speechSynthesis' in window)) {
+        log('❌ 浏览器不支持 speechSynthesis', 'bad');
+        return;
+      }
+      const u = new SpeechSynthesisUtterance('hello world');
+      u.lang = 'en-US';
+      u.onstart = () => log('✅ en-US onstart 触发', 'ok');
+      u.onend = () => log('✅ en-US onend 触发', 'ok');
+      u.onerror = (e) => log(`❌ en-US onerror: ${e.error}`, 'bad');
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+      log('已调用 speak(en-US)，请听是否有声音…');
+    }
+
+    function testOnlineEn() {
+      if (!('speechSynthesis' in window)) {
+        log('❌ 浏览器不支持 speechSynthesis', 'bad');
+        return;
+      }
+      const voices = window.speechSynthesis.getVoices();
+      const onlineEn = voices.filter(v =>
+        v.lang.toLowerCase().startsWith('en') &&
+        (/Natural|Online|Neural/i.test(v.name) || v.localService === false)
+      );
+      log(`找到 ${onlineEn.length} 个英文在线/自然音色：`);
+      onlineEn.forEach(v => log(`  - "${v.name}" | lang=${v.lang} | local=${v.localService}`));
+
+      if (onlineEn.length === 0) {
+        log('⚠️ 没有英文在线音色', 'bad');
+        return;
+      }
+      // 尝试用第一个在线英文音色朗读
+      const v = onlineEn[0];
+      const u = new SpeechSynthesisUtterance('hello, this is a test');
+      u.voice = v;
+      u.lang = v.lang;
+      u.onstart = () => log(`✅ 在线音色 "${v.name}" onstart 触发`, 'ok');
+      u.onend = () => log('✅ 朗读结束', 'ok');
+      u.onerror = (e) => log(`❌ 在线音色 error: ${e.error}（网络不可达）`, 'bad');
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+      log(`尝试用 "${v.name}" 朗读，请听是否有声音…`);
+    }
+  </script>
+</body>
+</html>
