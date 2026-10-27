@@ -11,7 +11,7 @@ import {
   X,
 } from "lucide-react";
 import WordMeaning from "@/components/word-meaning";
-import { warmupTts } from "@/components/tts-warmup";
+import { warmupTtsPriority } from "@/components/tts-warmup";
 import { useTtsSpeak } from "@/components/use-tts-speak";
 
 type Word = {
@@ -59,7 +59,7 @@ export default function Reinforce({
     const next = words
       .slice((page + 1) * PAGE_SIZE, (page + 2) * PAGE_SIZE)
       .map((w) => w.text);
-    warmupTts([...current, ...next], 3);
+    warmupTtsPriority(current, next, 3);
   }, [page, words]);
 
   const toggleMark = (id: string, value: Mark) => {

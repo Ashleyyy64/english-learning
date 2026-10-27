@@ -12,7 +12,7 @@
 | 操作系统 | Ubuntu 22.04 LTS | 已从 Windows Server 重装 |
 | 数据库 | PostgreSQL 15 | 已从 SQLite 迁移，解决并发写锁 |
 | 运行时 | Node.js 20 LTS | Next.js 15 要求 |
-| TTS | Python3 + edge-tts 7.2.8 | 微软神经网络音色，磁盘缓存 |
+| TTS | Python3 + edge-tts 7.2.8 | 微软神经网络音色，磁盘缓存 + 常驻合成进程 |
 | 进程守护 | PM2 | 崩溃重启 + 开机自启（systemd） |
 | 反向代理 | Nginx | 80/443 → 3000 |
 | HTTPS | certbot (Let's Encrypt) | 免费证书 + 自动续期 |
@@ -254,6 +254,7 @@ crontab -e
 |------|------|
 | 构建 OOM | 确认 swap 已生效（`free -h` 看 swap 非 0） |
 | TTS 无声 | `python3 -c "import edge_tts"` 验证；检查 `PYTHON_BIN` |
+| TTS 变慢/超时 | 常驻合成进程被 OOM 杀掉后会自动重建；`pm2 logs lingua --err` 看 `[tts-server]` 报错；确认 `.tts-cache/` 可写 |
 | 连不上数据库 | `psql "$DATABASE_URL" -c 'SELECT 1'` 验证连接串 |
 | 端口不通 | 检查安全组 + Nginx 状态 + `ss -tlnp` |
 | 服务器重启后网站挂 | `pm2 startup` 是否配置成功，`systemctl status pm2-root` |

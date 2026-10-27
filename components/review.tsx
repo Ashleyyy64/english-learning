@@ -17,7 +17,7 @@ import {
   Zap,
 } from "lucide-react";
 import WordMeaning from "@/components/word-meaning";
-import { warmupTts } from "@/components/tts-warmup";
+import { warmupTts, warmupTtsPriority } from "@/components/tts-warmup";
 import { useTtsSpeak } from "@/components/use-tts-speak";
 
 type Word = {
@@ -109,7 +109,7 @@ export default function Review({
     const next = words
       .slice((groupIndex + 1) * GROUP_SIZE, (groupIndex + 2) * GROUP_SIZE)
       .map((w) => w.text);
-    warmupTts([...current, ...next], 3);
+    warmupTtsPriority(current, next, 3);
   }, [mode, groupIndex, words, practiceWords, selectedGroups]);
 
   const openNote = (w: Word) => {
