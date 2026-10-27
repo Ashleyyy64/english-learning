@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { execFileSync } from "child_process";
-import { createReadStream, existsSync, mkdirSync, readFileSync } from "fs";
+import { createReadStream, existsSync, mkdirSync } from "fs";
 import { createInterface } from "readline";
 import path from "path";
 
@@ -133,7 +133,8 @@ const MANUAL_TRANSLATIONS: Record<string, string> = {
   "geese": "n.鹅（goose的复数）",
 };
 
-// ---------- 简易 CSV 解析（支持引号包裹、逗号转义 "" 、CRLF） ----------
+// ---------- 流式 CSV 解析（支持引号包裹、逗号转义 "" 、CRLF） ----------
+// 逐行读取、逐行产出，避免一次性把整个文件读进内存（100 万行关系表会导致 OOM）。
 function detectDelimiter(firstLine: string): string {
   const candidates = [">", "\t", ","];
   let best = ",";
@@ -148,24 +149,16 @@ function detectDelimiter(firstLine: string): string {
   return best;
 }
 
-function parseCsv(
-  text: string,
-  delimiter?: string,
-): { header: string[]; rows: Record<string, string>[] } {
-  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // 去 BOM
-  const firstLineEnd = text.indexOf("\n");
-  const firstLine = firstLineEnd === -1 ? text : text.slice(0, firstLineEnd);
-  const sep = delimiter ?? detectDelimiter(firstLine);
-  const rows: string[][] = [];
-  let row: string[] = [];
+// 将一行 CSV 文本按分隔符解析为字段数组（支持双引号包裹与 "" 转义）
+function parseCsvLine(line: string, sep: string): string[] {
+  const fields: string[] = [];
   let field = "";
   let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
     if (inQuotes) {
       if (ch === '"') {
-        if (text[i + 1] === '"') {
+        if (line[i + 1] === '"') {
           field += '"';
           i++;
         } else {
@@ -177,47 +170,60 @@ function parseCsv(
     } else if (ch === '"') {
       inQuotes = true;
     } else if (ch === sep) {
-      row.push(field);
+      fields.push(field);
       field = "";
-    } else if (ch === "\n") {
-      row.push(field);
-      field = "";
-      rows.push(row);
-      row = [];
-    } else if (ch === "\r") {
-      // 忽略，配合 \n 处理 CRLF
     } else {
       field += ch;
     }
   }
-  if (field !== "" || row.length > 0) {
-    row.push(field);
-    rows.push(row);
-  }
-
-  const header = (rows.shift() ?? []).map((h) => h.trim());
-  const result = rows
-    .filter((r) => r.some((c) => c.trim() !== ""))
-    .map((r) => {
-      const obj: Record<string, string> = {};
-      header.forEach((h, idx) => {
-        obj[h] = r[idx] ?? "";
-      });
-      return obj;
-    });
-  return { header, rows: result };
+  fields.push(field);
+  return fields;
 }
 
-function read(name: string): string {
-  const p = path.join(DATA_DIR, name);
-  if (!existsSync(p)) {
-    throw new Error(
-      `缺少文件：${p}\n请先 clone https://github.com/LinXueyuanStdio/DictionaryData，` +
-        `将 word.csv / book.csv / word_translation.csv / relation_book_word.csv 放入该目录，` +
-        `或用环境变量 DICTIONARY_DATA_DIR 指定目录。`,
-    );
+// 流式遍历 CSV：对每一行（非空）调用 handler，传入由 header 映射成的对象。
+// 首行自动识别分隔符并作为表头。
+async function forEachCsvRow(
+  filePath: string,
+  handler: (row: Record<string, string>) => void | Promise<void>,
+): Promise<void> {
+  if (!existsSync(filePath)) {
+    throw new Error(`缺少文件：${filePath}`);
   }
-  return readFileSync(p, "utf-8");
+
+  const reader = createInterface({
+    input: createReadStream(filePath, "utf-8"),
+    crlfDelay: Infinity,
+  });
+
+  let header: string[] | null = null;
+  let sep = ",";
+  let first = true;
+
+  for await (const rawLine of reader) {
+    const line = rawLine.replace(/\r$/, "");
+    if (!line.trim()) continue;
+
+    if (first) {
+      // 去 BOM
+      const cleanLine = line.charCodeAt(0) === 0xfeff ? line.slice(1) : line;
+      sep = detectDelimiter(cleanLine);
+      header = parseCsvLine(cleanLine, sep).map((h) => h.trim());
+      first = false;
+      continue;
+    }
+
+    if (!header) continue;
+    const fields = parseCsvLine(line, sep);
+    const obj: Record<string, string> = {};
+    header.forEach((h, idx) => {
+      obj[h] = fields[idx] ?? "";
+    });
+    await handler(obj);
+  }
+}
+
+function dataFilePath(name: string): string {
+  return path.join(DATA_DIR, name);
 }
 
 function readRelationCsvPath(): string {
@@ -361,37 +367,20 @@ async function batchUpsert(
 
 async function main() {
   console.log("读取 CSV 数据源：" + DATA_DIR);
-  const bookCsv = parseCsv(read("book.csv"));
-  const wordCsv = parseCsv(read("word.csv"));
-  const transCsv = parseCsv(read("word_translation.csv"));
-  const relCsv = parseCsv(readFileSync(readRelationCsvPath(), "utf-8"));
 
-  // 1. 中文释义：word -> translation[]
-  const transMap = new Map<string, string[]>();
-  for (const r of transCsv.rows) {
-    const w = get(r, "word", "vc_vocabulary").trim();
-    const t = cleanTranslation(get(r, "translation", "meaning"));
-    if (!w || !t) continue;
-    const arr = transMap.get(w) ?? [];
-    if (!arr.includes(t)) arr.push(t);
-    transMap.set(w, arr);
-  }
-
-  // 2. 先收集本次需要翻译的单词，再读取 ECDICT 主词典。
+  // 1. 流式读 word.csv：收集单词 + 需要翻译的单词集合（neededWords）。
+  //    wordData 必须整存（供批量 upsert），但 7 万条对象体积可控；不再产生整文件字符串。
   const neededWords = new Set<string>();
-  for (const r of wordCsv.rows) {
-    const text = get(r, "vc_vocabulary", "word").trim();
-    if (text) neededWords.add(text);
-  }
-
-  const ecdictMap = await readEcdictTranslations(neededWords);
-
-  // 3. 单词
   const wordData: Record<string, unknown>[] = [];
-  for (const r of wordCsv.rows) {
+  const bookData: Record<string, unknown>[] = [];
+  let relTotal = 0;
+
+  // 2. 先读 ECDICT 主词典（依赖 neededWords，故先收集 neededWords）。
+  await forEachCsvRow(dataFilePath("word.csv"), (r) => {
     const id = get(r, "vc_id", "id").trim();
     const text = get(r, "vc_vocabulary", "word").trim();
-    if (!id || !text) continue;
+    if (!id || !text) return;
+    neededWords.add(text);
     wordData.push({
       id,
       text,
@@ -400,18 +389,36 @@ async function main() {
       frequency: toFloat(get(r, "vc_frequency", "frequency")),
       difficulty: toInt(get(r, "vc_difficulty", "difficulty")),
       acknowledgeRate: toFloat(get(r, "vc_acknowledge_rate", "acknowledge_rate")),
-      translation:
-        MANUAL_TRANSLATIONS[text] ??
-        ((ecdictMap.get(text) ?? transMap.get(text) ?? []).join("；") || null),
+      translation: null, // 稍后回填
     });
+  });
+
+  const ecdictMap = await readEcdictTranslations(neededWords);
+
+  // 3. 流式读 word_translation.csv：word -> translation[]（回退释义来源）。
+  const transMap = new Map<string, string[]>();
+  await forEachCsvRow(dataFilePath("word_translation.csv"), (r) => {
+    const w = get(r, "word", "vc_vocabulary").trim();
+    const t = cleanTranslation(get(r, "translation", "meaning"));
+    if (!w || !t) return;
+    const arr = transMap.get(w) ?? [];
+    if (!arr.includes(t)) arr.push(t);
+    transMap.set(w, arr);
+  });
+
+  // 4. 回填单词释义（优先 ECDICT，回退 word_translation，再回退手动兜底表）。
+  for (const row of wordData) {
+    const text = String(row.text);
+    row.translation =
+      MANUAL_TRANSLATIONS[text] ??
+      ((ecdictMap.get(text) ?? transMap.get(text) ?? []).join("；") || null);
   }
 
-  // 4. 词书（含分类层级）
-  const bookData: Record<string, unknown>[] = [];
-  for (const r of bookCsv.rows) {
+  // 5. 流式读 book.csv：词书（含分类层级）。
+  await forEachCsvRow(dataFilePath("book.csv"), (r) => {
     const id = get(r, "bk_id", "id").trim();
     const name = get(r, "bk_name", "name").trim();
-    if (!id || !name) continue;
+    if (!id || !name) return;
     const parentRaw = get(r, "bk_parent_id", "parent_id").trim();
     bookData.push({
       id,
@@ -427,30 +434,27 @@ async function main() {
       version: get(r, "bk_version", "version") || null,
       flag: get(r, "bk_flag", "flag") || null,
     });
-  }
+  });
 
-  // 4. 词书 - 单词关系
-  const relData: Record<string, unknown>[] = [];
-  for (const r of relCsv.rows) {
+  // 6. 流式读 relation_book_word.csv：边读边按 (bookId, wordId) 去重，
+  //    不再先把 100 万行存进数组（这是原 OOM 主因）。
+  const relMap = new Map<string, Record<string, unknown>>();
+  await forEachCsvRow(readRelationCsvPath(), (r) => {
     const bookId = get(r, "bv_book_id", "book_id").trim();
     const wordId = get(r, "bv_voc_id", "voc_id", "word_id").trim();
-    if (!bookId || !wordId) continue;
-    relData.push({
-      id: `${bookId}__${wordId}`,
-      bookId,
-      wordId,
-      unit: get(r, "bv_tag", "tag", "unit") || null,
-      flag: get(r, "bv_flag", "flag") || null,
-    });
-  }
-
-  // relation_book_word.csv 中同一个单词可能出现在同一本词书的多个单元，
-  // 当前数据模型按 (bookId, wordId) 唯一约束，只保留首个分组。
-  const relMap = new Map<string, Record<string, unknown>>();
-  for (const row of relData) {
-    const key = `${String(row.bookId)}__${String(row.wordId)}`;
-    if (!relMap.has(key)) relMap.set(key, row);
-  }
+    if (!bookId || !wordId) return;
+    relTotal++;
+    const key = `${bookId}__${wordId}`;
+    if (!relMap.has(key)) {
+      relMap.set(key, {
+        id: key,
+        bookId,
+        wordId,
+        unit: get(r, "bv_tag", "tag", "unit") || null,
+        flag: get(r, "bv_flag", "flag") || null,
+      });
+    }
+  });
   const uniqueRelData = [...relMap.values()];
 
   const bookIdSet = new Set(bookData.map((row) => String(row.id)));
@@ -461,7 +465,7 @@ async function main() {
   );
   const skippedRelCount = uniqueRelData.length - validRelData.length;
 
-  console.log(`解析完成：词书 ${bookData.length}、单词 ${wordData.length}、关系 ${relData.length}（去重后 ${uniqueRelData.length}，有效 ${validRelData.length}）`);
+  console.log(`解析完成：词书 ${bookData.length}、单词 ${wordData.length}、关系 ${relTotal}（去重后 ${uniqueRelData.length}，有效 ${validRelData.length}）`);
   if (skippedRelCount > 0) {
     console.warn(`跳过 ${skippedRelCount} 条引用了缺失词书或单词的关系记录。`);
   }
