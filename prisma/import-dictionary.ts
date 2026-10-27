@@ -338,6 +338,15 @@ function quoteIdentifier(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
+// 将值序列化为 SQL 字面量（值来自本地词典 CSV，可信；字符串做单引号转义）
+function sqlLiteral(value: DbValue): string {
+  if (value === null) return "NULL";
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? String(value) : "NULL";
+  }
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
 async function batchUpsert(
   table: string,
   columns: string[],
@@ -349,19 +358,20 @@ async function batchUpsert(
   for (let i = 0; i < rows.length; i += batchSize) {
     const chunk = rows.slice(i, i + batchSize);
     const columnList = columns.map(quoteIdentifier).join(",");
-    const tuplePlaceholders = chunk
-      .map(() => `(${columns.map(() => "?").join(",")})`)
+    // 值直接内联为 SQL 字面量，绕开 Prisma raw 参数绑定（避免占位符序列化踩坑）
+    const tupleValues = chunk
+      .map((row) => {
+        const vals = columns.map((column) => sqlLiteral((row[column] ?? null) as DbValue));
+        return `(${vals.join(",")})`;
+      })
       .join(",");
     const conflict = conflictColumns.map(quoteIdentifier).join(",");
     const updates = updateColumns
       .map((column) => `${quoteIdentifier(column)}=excluded.${quoteIdentifier(column)}`)
       .join(",");
-    const values: DbValue[] = chunk.flatMap((row) =>
-      columns.map((column) => (row[column] ?? null) as DbValue),
-    );
 
-    const sql = `INSERT INTO ${quoteIdentifier(table)} (${columnList}) VALUES ${tuplePlaceholders} ON CONFLICT(${conflict}) DO UPDATE SET ${updates};`;
-    await prisma.$executeRawUnsafe(sql, ...values);
+    const sql = `INSERT INTO ${quoteIdentifier(table)} (${columnList}) VALUES ${tupleValues} ON CONFLICT(${conflict}) DO UPDATE SET ${updates};`;
+    await prisma.$executeRawUnsafe(sql);
   }
 }
 
