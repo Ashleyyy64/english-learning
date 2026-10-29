@@ -105,16 +105,26 @@ rsync -av ./dictionary-data/ root@你的IP:/opt/lingua/dictionary-data/
 
 ### 5.3 配置 .env
 
-在服务器 `/opt/lingua/.env` 创建：
+在服务器 `/opt/lingua/.env` 创建。完整模板见 `.env.production.example`，最小必填项：
 
 ```bash
 cd /opt/lingua
-cat > .env <<'EOF'
-DATABASE_URL="postgresql://lingua:你的强密码@localhost:5432/lingua?schema=public"
-JWT_SECRET="$(openssl rand -base64 48 的输出)"
-PYTHON_BIN="python3"
-EOF
+cp .env.production.example .env
+# 然后编辑 .env，至少填：DATABASE_URL、JWT_SECRET、APP_BASE_URL
 ```
+
+> 生成密钥：`openssl rand -base64 48`（JWT_SECRET）、`openssl rand -base64 32`（CODES_PEPPER / OAUTH_ENCRYPTION_KEY）
+
+认证相关新增配置项说明：
+
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `CODES_PEPPER` | 建议 | 验证码哈希加盐，缺省回退 JWT_SECRET |
+| `OAUTH_ENCRYPTION_KEY` | 建议 | OAuth 令牌加密密钥，缺省回退 JWT_SECRET |
+| `APP_BASE_URL` | OAuth 时必填 | 回调地址拼接基础 |
+| `SMTP_HOST` 等 | 邮件验证码时 | 不配置则邮件验证码不可用（开发环境回退控制台） |
+| `SMS_PROVIDER` 等 | 短信验证码时 | `console`=控制台兜底，`tencent`=腾讯云短信 |
+| `WECHAT_*` / `GITHUB_*` | 第三方登录时 | 未配置时对应登录入口返回「未配置」提示 |
 
 > 生成 JWT 密钥：`openssl rand -base64 48`
 
@@ -170,7 +180,8 @@ cd /opt/lingua
 # 1. 安装依赖（自动 prisma generate）
 npm install
 
-# 2. 建表
+# 2. 建表（含认证新增的 Session / VerificationCode / OAuthAccount 表，
+#    以及 User 新增的 email/phone/status/failedAttempts/lockedUntil 等字段）
 npx prisma db push --skip-generate
 
 # 3. 种子数据（演示账号 + 邀请码）
@@ -182,6 +193,8 @@ npm run db:import
 # 5. 生产构建
 npm run build
 ```
+
+> **升级说明**：本次认证升级后，旧版 JWT（不含会话 id）将无法通过校验，所有用户需重新登录一次；已有用户数据不受影响。新注册用户走「邮箱/手机号 + 验证码」流程，旧用户名密码用户仍可按原方式登录。
 
 ---
 

@@ -14,10 +14,21 @@ datasource db {
 model User {
   id           String   @id @default(cuid())
   username     String   @unique
-  passwordHash String
+  email        String?  @unique // 邮箱（可选，用于注册/登录/找回密码/验证）
+  phone        String?  @unique // 手机号（可选，用于注册/登录/找回密码/验证）
+  passwordHash String? // bcrypt 哈希；第三方登录（OAuth）用户可为空
   name         String // 显示姓名 / 昵称
   // 使用字符串并在 API 层校验 TEACHER / STUDENT（避免 enum 迁移成本）
   role         String
+  // 账号状态：ACTIVE / LOCKED（登录失败次数过多触发锁定）
+  status        String    @default("ACTIVE")
+  emailVerified Boolean   @default(false)
+  phoneVerified Boolean   @default(false)
+  // 登录安全：连续失败次数 + 锁定截止时间
+  failedAttempts Int      @default(0)
+  lockedUntil    DateTime?
+  lastLoginAt    DateTime?
+  avatar         String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -35,6 +46,59 @@ model User {
   wordProgress UserWordProgress[]
   wrongWords   UserWrongWord[]
   memories     UserMemory[]
+  // 登录会话（支持「记住登录态」与「安全退出」服务端吊销）
+  sessions     Session[]
+  // 第三方登录绑定
+  oauthAccounts OAuthAccount[]
+}
+
+// 登录会话：服务端保存，登出/退出所有设备时吊销，实现真正的「安全退出」
+model Session {
+  id         String    @id @default(cuid())
+  userId     String
+  userAgent  String?
+  ip         String?
+  expiresAt  DateTime // 会话有效期（记住我 30 天 / 普通 7 天）
+  revokedAt  DateTime? // 非空表示已吊销
+  lastSeenAt DateTime  @default(now())
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// 验证码（短信/邮件）：只存哈希，带用途、过期时间与重试次数限制
+model VerificationCode {
+  id           String   @id @default(cuid())
+  target       String // 规范化后的邮箱或手机号
+  codeHash     String // sha256(code + pepper) 哈希，不存明文
+  purpose      String // REGISTER / LOGIN / RESET_PASSWORD
+  expiresAt    DateTime
+  usedAt       DateTime? // 校验通过后标记已使用，防止重放
+  attemptCount Int      @default(0) // 校验失败次数，超过上限作废
+  createdAt    DateTime @default(now())
+
+  @@index([target, purpose, createdAt])
+}
+
+// 第三方登录绑定（微信 / GitHub 等 OAuth）
+model OAuthAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String // WECHAT / GITHUB / ...
+  providerAccountId String // openid / id
+  accessToken       String? // AES-GCM 加密存储
+  refreshToken      String? // AES-GCM 加密存储
+  expiresAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
 }
 
 // 教师 - 学生绑定关系

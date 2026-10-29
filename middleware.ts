@@ -5,7 +5,7 @@ import { AUTH_COOKIE, verifyToken } from "@/lib/jwt";
 const PROTECTED_PREFIXES = ["/dashboard"];
 
 // 已登录用户不应再访问的页面
-const AUTH_PAGES = ["/login", "/register"];
+const AUTH_PAGES = ["/login", "/register", "/forgot-password"];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -38,6 +38,6 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // 仅对受保护页面和登录/注册页生效，避免干扰 API 与静态资源
-  matcher: ["/dashboard/:path*", "/login", "/register"],
+  // 仅对受保护页面和登录/注册/找回密码页生效，避免干扰 API 与静态资源
+  matcher: ["/dashboard/:path*", "/login", "/register", "/forgot-password"],
 };

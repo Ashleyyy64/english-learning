@@ -4,7 +4,8 @@ import bcrypt from "bcryptjs";
 const prisma = new PrismaClient();
 
 async function main() {
-  const password = await bcrypt.hash("123456", 10);
+  // 演示账号密码较弱，仅用于本地联调；上线前务必删除或修改（见 DEPLOY.md）
+  const password = await bcrypt.hash("123456", 12);
 
   const teacher = await prisma.user.upsert({
     where: { username: "teacher" },

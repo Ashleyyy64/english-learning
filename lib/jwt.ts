@@ -5,6 +5,7 @@ export const AUTH_COOKIE = "lingua_token";
 export interface SessionPayload {
   sub: string; // 用户 id
   role: "TEACHER" | "STUDENT";
+  sid: string; // 会话 id（对应 Session 表，用于服务端吊销校验）
 }
 
 export function normalizeRole(role: string): SessionPayload["role"] | null {
@@ -19,19 +20,35 @@ function getSecret() {
   );
 }
 
-export async function signToken(payload: SessionPayload): Promise<string> {
-  return new SignJWT({ role: payload.role })
+export interface SignTokenOptions {
+  sid: string;
+  /** 过期时长，如 "7d" / "30d" / "15m" */
+  expiresIn?: string;
+}
+
+export async function signToken(
+  payload: Omit<SessionPayload, "sid"> & { sid: string },
+  opts?: { expiresIn?: string },
+): Promise<string> {
+  return new SignJWT({ role: payload.role, sid: payload.sid })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(payload.sub)
     .setIssuedAt()
-    .setExpirationTime("7d")
+    .setExpirationTime(opts?.expiresIn ?? "7d")
     .sign(getSecret());
 }
 
 export async function verifyToken(token: string): Promise<SessionPayload | null> {
   try {
     const { payload } = await jwtVerify(token, getSecret());
-    return { sub: payload.sub ?? "", role: (payload.role as SessionPayload["role"]) ?? "STUDENT" };
+    const sub = payload.sub ?? "";
+    const sid = (payload.sid as string) ?? "";
+    if (!sub || !sid) return null;
+    return {
+      sub,
+      role: (payload.role as SessionPayload["role"]) ?? "STUDENT",
+      sid,
+    };
   } catch {
     return null;
   }
